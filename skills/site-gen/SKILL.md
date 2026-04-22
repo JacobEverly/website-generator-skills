@@ -1,6 +1,6 @@
 ---
 name: site-gen
-description: Generate a single production-grade page from DESIGN.md. Bakes in all lessons learned — no dynamic Tailwind, hydration fixes, accessibility, mobile-first, anti-slop guardrails.
+description: Generate a single production-grade page from DESIGN.md. Bakes in all lessons learned — no dynamic Tailwind, hydration fixes, accessibility, mobile-first, anti-slop guardrails. Supports `brand=boundless` to apply the official Boundless 2026 brand kit (Replica + Utopia fonts, cream/carbon palette, logo).
 user-invokable: true
 args:
   - name: page
@@ -8,6 +8,9 @@ args:
     required: true
   - name: design-md
     description: Path to DESIGN.md (defaults to ./DESIGN.md)
+    required: false
+  - name: brand
+    description: Brand overlay to apply on top of the base theme. Currently supports `boundless` (official Boundless 2026 kit). Omit for neutral base theme only.
     required: false
 ---
 
@@ -17,13 +20,35 @@ Generate a complete, production-grade single page following the project's DESIGN
 
 1. Read the project's `DESIGN.md` (from `design-md` arg or `./DESIGN.md`)
 2. Read the base theme: `~/.claude/design-library/boundless-base.md`
-3. Read the tech UI reference: `~/.claude/design-library/references/techui.md`
-4. Read the animation stack: `~/.claude/design-library/references/animation-stack.md`
-5. Read the agent-friendly reference: `~/.claude/design-library/references/agent-friendly.md`
-6. Read the Pretext reference: `~/.claude/design-library/references/pretext.md`
-7. Read any project CLAUDE.md for additional design context
+3. **If `brand=boundless`**, read the Boundless brand overlay: `~/.claude/design-library/brands/boundless/brand.md`. Its tokens (fonts, palette, components) override the base theme where they conflict. DESIGN.md still wins for project-specific overrides.
+4. Read the tech UI reference: `~/.claude/design-library/references/techui.md`
+5. Read the animation stack: `~/.claude/design-library/references/animation-stack.md`
+6. Read the anime.js pattern library + selection method: `~/.claude/design-library/references/anime-patterns.md`
+7. Read the agent-friendly reference: `~/.claude/design-library/references/agent-friendly.md`
+8. Read the Pretext reference: `~/.claude/design-library/references/pretext.md`
+9. Read any project CLAUDE.md for additional design context
 
 If no DESIGN.md exists, STOP and tell the user to run `/design-brief` first.
+
+### Applying a brand overlay
+
+When the `brand` arg is set, **before generating the page** copy the brand assets into the project:
+
+**`brand=boundless`:**
+```bash
+# Copy fonts
+mkdir -p public/fonts/replica public/fonts/utopia
+cp ~/.claude/design-library/brands/boundless/assets/fonts/replica/*.otf public/fonts/replica/
+cp ~/.claude/design-library/brands/boundless/assets/fonts/utopia/*.otf public/fonts/utopia/
+
+# Copy logo(s)
+mkdir -p public/svg
+cp ~/.claude/design-library/brands/boundless/assets/logos/*.svg public/svg/
+```
+
+Then emit the `@font-face`, palette tokens, and Tailwind theme block from `brands/boundless/brand.md` into `app/globals.css`. The Boundless brand overlay is authoritative for: font families, palette (cream/carbon, never pure white/black), button styles (including the single signature rainbow-button), and logo usage. DESIGN.md still controls layout personality, voice specifics, and section plan.
+
+If an unknown brand name is passed, stop and list the available brands (currently just `boundless`).
 
 ## Step 2: Enhance the Prompt
 
@@ -62,6 +87,62 @@ Design tokens:
 Hard rules: {from DESIGN.md Hard Rules}
 ```
 
+## Step 2.5: Pick Relevant Animations (Method)
+
+Before generating, decide what animates and why. Relevance beats novelty — a misplaced flourish reads as slop faster than no animation at all. This step produces an **animation plan** that Step 3 implements.
+
+### The method — four passes
+
+**Pass 1: Pick the signature moment.** Exactly one animation on the page will be memorable. It is almost always the hero, sometimes a mid-page "how it works" or stats section. Not every section. Not every element. One.
+
+**Pass 2: Map each remaining section to a pattern via the decision tree** (from `anime-patterns.md`):
+
+```
+SVG / logo / diagram in section?     → svg.createDrawable (path-draw)
+Large headline meant to land hard?   → text.split + stagger (1-2 sections max)
+Metrics / numbers proving something? → Counter roll-up on scroll
+Grid/list of peer items?             → stagger from center (grid) or stagger(60) (linear)
+Process / flow / "how it works"?     → Timeline + svg.createMotionPath
+Logo bar / social proof?             → Infinite marquee — never stagger-fade logos
+CTA / sign-up?                       → No section animation. Hover/focus only.
+FAQ / dense text?                    → Motion fade-up only. No anime.js.
+None of the above?                   → Motion fade-up, 30px translate, 600ms, outExpo.
+```
+
+**Pass 3: Honor DESIGN.md Motion Style.**
+- If Motion Style = "calm / restrained" → skip char-level reveals, use word-level; drop looping ambient animations; keep only the signature moment.
+- If Motion Style = "energetic / bold" → enable grid waves, motion paths, longer stagger timelines.
+- If Motion Style = unspecified → default to calm. Tech UI (OpenAI / Vercel / Linear) aesthetic is restrained.
+
+**Pass 4: Check budget.** A landing page ships with at most:
+- 1 signature animation (hero or mid-section)
+- 3–4 scroll-triggered section entrances
+- 2–3 micro-interactions (magnetic button, hover lift, icon morph)
+- 1 ambient loop (marquee or subtle background)
+
+If your plan has more, cut.
+
+### Output the animation plan before coding
+
+Produce a table like this and include it in the prompt before generating components:
+
+```
+Section          | Pattern                              | Library    | Signature?
+-----------------|--------------------------------------|------------|-----------
+Hero             | Pattern 1 — split-text headline      | Anime.js   | YES
+Feature grid     | Pattern 4 — center-out stagger wave  | Anime.js   | no
+Stats strip      | Pattern 3 — counter roll-up          | Anime.js   | no
+How it works     | Pattern 5 — motion path flow         | Anime.js   | no
+Logo bar         | Pattern 6 — infinite marquee         | Anime.js   | no
+Testimonial      | Motion fade-up                       | Motion     | no
+FAQ              | Motion fade-up                       | Motion     | no
+CTA              | None (hover micro-interactions only) | —          | no
+```
+
+All patterns live in `~/.claude/design-library/references/anime-patterns.md`. Copy the pattern template verbatim, then customize targets/timings to the section's content.
+
+**Rule:** exactly one row in the table has `Signature? = YES`. If two do, demote one.
+
 ## Step 3: Generate the Page
 
 Generate a complete Next.js + Tailwind page component with polished animations.
@@ -71,7 +152,11 @@ Always include the Tier 1 animation + text measurement stack:
 ```bash
 npm install motion lenis @chenglou/pretext
 ```
-Add Tier 2 for marketing/landing pages with scroll-driven sequences:
+Add Tier 2 — **Anime.js is installed on every marketing/landing page** (SVG path draws, text.split, counters, motion paths, grid staggers — all free, used in Step 2.5 patterns):
+```bash
+npm install animejs
+```
+Add GSAP only when the page needs scroll-pinning or scrub-linked playback:
 ```bash
 npm install gsap @gsap/react
 ```
@@ -462,6 +547,21 @@ Before writing any component, verify it does NOT contain:
 - "Trusted by" labels above logo bars
 - Bounce/elastic animations
 
+**Animation-specific anti-slop (from anime-patterns.md):**
+- No signature animation at all — every page needs ONE memorable moment
+- Signature animation in more than one section — pick one, demote the rest
+- Character stagger on body paragraphs — chars are for ≤6-word headlines only
+- Staggered fade-in on logo bars — use marquee instead (kills social-proof effect)
+- Typing animation on headlines — dated, use split-text reveal
+- Counter that counts from 0 on every scroll — use `once: true`
+- Bounce/elastic/overshoot on text or cards — `outBack` OK on icons/badges only
+- Loading gate before the hero — headline must be readable within 300ms
+- Parallax on mobile — disable
+- Motion path without a justifiable reason — an orbit needs purpose
+- Infinite loop in viewport without pause-on-hover
+- Missing `prefers-reduced-motion` handling in any `useEffect` with anime.js
+- Missing `createScope(...).revert()` cleanup on any anime.js block
+
 If any of these appear in the generated code, fix them before outputting.
 
 ### Agent-Friendly & GEO (Auto-Generated for Every Site)
@@ -574,8 +674,14 @@ Run these checks after generation:
    - `bg-gradient` combined with `bg-clip-text`
    - `grid-cols-2` without asymmetry (should be custom grid-template-columns)
    - `animate-bounce`, `animate-pulse` used decoratively
-3. **DESIGN.md conformance**: Verify colors, fonts, spacing match the design system
-4. **Mobile check**: Verify every section has responsive classes
+3. **Animation-plan check**: For every file importing `animejs`, verify:
+   - `createScope` wraps the animation block and `revert()` is called in cleanup
+   - `prefers-reduced-motion` is checked before animating
+   - No char-level `text.split` on elements containing `<p>` body text (only headlines)
+   - Scroll-triggered reveals use `once: true` unless they're loops
+   - Exactly one section is marked as the signature moment
+4. **DESIGN.md conformance**: Verify colors, fonts, spacing match the design system
+5. **Mobile check**: Verify every section has responsive classes
 
 ## Step 5: Output
 

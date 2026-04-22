@@ -1,6 +1,6 @@
 ---
 name: site-refine
-description: Autonomous refinement loop for generated websites. Two quality gates (screenshot-worthy + mobile-fast), dispatches specialized skills, loops until both pass. Max 3 iterations.
+description: Autonomous refinement loop for generated websites. Three quality gates (screenshot-worthy + mobile-fast + animation-renders-correctly), dispatches specialized skills, loops until all pass. Max 3 iterations.
 user-invokable: true
 args:
   - name: mode
@@ -8,18 +8,21 @@ args:
     required: false
 ---
 
-Autonomous refinement loop that evaluates a generated website against two quality gates and dispatches specialized skills until both pass. Runs without human intervention after DESIGN.md approval.
+Autonomous refinement loop that evaluates a generated website against three quality gates and dispatches specialized skills until all pass. Runs without human intervention after DESIGN.md approval.
 
 ## Overview
 
 ```
 ┌─────────────────────────────────────────────┐
 │              CRITIQUE PHASE                  │
-│  Read all pages → evaluate against gates     │
+│  Gate 1 — "Would I screenshot this?"         │
+│  Gate 2 — "Does it load fast on mobile?"     │
+│  Gate 3 — "Do animations render correctly?"  │
+│           (runs /animation-check in browser) │
 └──────────────┬──────────────────────────────┘
                │
        ┌───────▼───────┐
-       │  Both pass?    │──── YES ──→ Run /polish → DONE
+       │  All 3 pass?   │──── YES ──→ Run /polish → DONE
        └───────┬───────┘
                │ NO
        ┌───────▼───────┐
@@ -87,13 +90,41 @@ This gate tests production readiness:
 - **No horizontal scroll** — Nothing breaks out of viewport on mobile
 - **Fast load** — No heavy dependencies, no blocking animations, semantic HTML for fast parse
 
+### Step 3.5: Critique — Gate 3: "Do Animations Render Correctly?"
+
+This gate tests that animations actually work when they run — not just that the code looks well-formed. Invoke the `/animation-check` skill, which uses Playwright MCP to:
+
+1. Launch (or connect to) the dev server
+2. Navigate at 375px, 768px, and 1440px viewports
+3. Wait for fonts, hero entrance, and scroll-triggered animations to settle
+4. Scroll through the page so scroll-triggered animations fire
+5. Run programmatic checks: CLS, horizontal overflow, sibling overlap, clipped text, lingering non-ambient animations, elements stuck mid-animation, console errors
+6. Capture full-page screenshots at each viewport
+7. Visually evaluate each screenshot for typography fit, alignment, empty-space gaps, overlap, CTA visibility
+
+**Preconditions:**
+- Dev server must be running. If not, instruct the user to `npm run dev` and pause the loop.
+- Playwright MCP must be available. If not, skip Gate 3 with a warning — do not fail the whole refine loop.
+
+**Gate 3 passes when:**
+- CLS < 0.05 at all viewports
+- No horizontal overflow at any viewport
+- No sibling overlap > 5px
+- No elements stuck at `opacity < 1` or with non-identity transforms after the settle window
+- No non-ambient animations still running after settle
+- Screenshots show no clipped headlines, no empty hero space, no touch targets < 44px on mobile
+
+**Gate 3 fails when any FAIL-severity finding is reported.** WARN-severity findings are tracked but don't block the gate on iteration 1; they're promoted to FAIL on iteration 2+.
+
+Artifacts from `/animation-check` are saved to `.animation-check/` (screenshots + report.json + report.md). The refine loop reads `report.json` to drive Step 5.
+
 ### Step 4: Score and Decide
 
 For each gate, assign: **PASS** or **FAIL** with specific reasons.
 
-**If both PASS** → Skip to Step 6 (Polish).
+**If all three PASS** → Skip to Step 6 (Polish).
 
-**If either FAILS** → Proceed to Step 5 (Fix), up to 3 total iterations.
+**If any FAILS** → Proceed to Step 5 (Fix), up to 3 total iterations.
 
 **If max iterations reached** → Proceed to Step 6 (Polish) with warnings about remaining issues.
 
@@ -119,6 +150,22 @@ Based on which gate(s) failed, identify the **top 3 issues** and dispatch the ma
 | Slow/heavy | `/optimize` | Improves performance |
 | Edge case fragility | `/harden` | Robustness improvements |
 
+#### Animation Gate Failures → Rendering Skills / Direct Edits
+Read `.animation-check/report.json` and map each FAIL entry:
+
+| Finding | Action |
+|---------|--------|
+| CLS > 0.05 on hero | `/harden` → add `useTextLayout` hook and `minHeight` on hero text container |
+| CLS > 0.05 on mid-page | `/harden` → reserve height for animated elements (e.g. counters, drawables) |
+| Horizontal overflow | `/adapt` → mobile responsive fix (usually a marquee width or fixed-size image) |
+| Sibling section overlap | `/polish` → add section vertical padding / section margin |
+| Element stuck at `opacity: 0` | Direct edit the offending component. Most common causes: missing `'use client'` directive, `createScope` not set up correctly, `useEffect` runs before refs attach, `onScroll` trigger never fires because container has `overflow: hidden` |
+| Element stuck at non-identity transform | Direct edit — anime.js block never completed. Check that `animate()` has a defined `to` value, that `createScope(...).revert()` isn't firing mid-animation from a React re-render |
+| Lingering non-ambient animation | Direct edit — add `once: true` to the `onScroll` trigger, or remove the `loop: true` if unintentional |
+| Clipped headline | `/adapt` → add `useAdaptiveHeadline` hook or reduce hero font-size at the failing breakpoint |
+| Touch target < 44px | `/harden` → enforce min-size on buttons/links |
+| Console error from anime.js/motion/gsap | Direct edit the file referenced in the error |
+
 #### How to Dispatch
 For each issue:
 1. Identify the specific files/components affected
@@ -142,7 +189,8 @@ Always run the `/polish` skill as the final step, even if both gates passed on t
 After polish:
 1. `npx tsc --noEmit` — must pass
 2. One last anti-slop scan
-3. Confirm DESIGN.md conformance
+3. One last `/animation-check` pass — `/polish` sometimes adjusts spacing in ways that reintroduce overlap or CLS. Re-verify before declaring done.
+4. Confirm DESIGN.md conformance
 
 ### Step 8: Output
 
